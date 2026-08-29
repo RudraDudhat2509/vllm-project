@@ -2,33 +2,33 @@
 Three KV-cache strategies, all exposing the same interface so benchmark.py
 can swap them in and out without touching the attention math:
 
-  NaiveContiguousCache  - preallocates the full max_seq_len upfront, reads
+  NaiveContiguousCache  preallocates the full max_seq_len upfront, reads
                            are a plain contiguous slice (fast, memory-wasteful).
                            This is how pre-vLLM serving engines (e.g. early
                            FasterTransformer / HF generate) handled KV cache.
 
-  PagedCache            - vLLM's actual approach. Physical memory is
+  PagedCache            vLLM's actual approach. Physical memory is
                            committed in fixed-size blocks only as needed
                            (memory-efficient), but every read has to gather
                            and concatenate every allocated block, which is
                            the block-table lookup overhead the vLLM paper
-                           itself reports (20-26% slower than a non-paged
+                           itself reports (20 to 26% slower than a non-paged
                            kernel).
 
-  VAttentionCache       - our reproduction of vAttention's core idea (Microsoft
+  VAttentionCache       our reproduction of vAttention's core idea (Microsoft
                            Research, ASPLOS'25, arXiv:2405.04437): keep physical
                            memory commitment in fixed blocks (same memory
                            accounting as PagedCache) but present a virtually
                            contiguous read path so each step is a plain O(1)
-                           append instead of an O(blocks-so-far) re-gather.
+                           append instead of an O(blocks_so_far) re-gather.
                            On a real GPU that contiguity comes from CUDA
                            virtual memory APIs; here we emulate the same
-                           *behavioral* effect in plain PyTorch since this
+                           behavioral effect in plain PyTorch since this
                            proposal stage has no GPU access.
 
 All three report physical_blocks_used(t): an analytical block count, not
 measured process RSS. We track it this way because Python/CPU can't emulate
-real OS/CUDA lazy physical-page commit -- but block-count accounting is
+real OS/CUDA lazy physical-page commit, but block-count accounting is
 exactly the metric the vLLM and vAttention papers themselves use to report
 memory savings, so it's a fair like-for-like comparison.
 """
@@ -110,6 +110,6 @@ class VAttentionCache:
         return k_hist, v_hist
 
     def physical_blocks_used(self, t):
-        # same block-granularity commit as PagedCache -- the memory saving
+        # same block-granularity commit as PagedCache: the memory saving
         # is preserved even though the read path above is contiguous
         return self.batch_size * self.n_layers * math.ceil((t + 1) / self.block_size)

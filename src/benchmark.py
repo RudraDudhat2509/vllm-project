@@ -8,7 +8,7 @@ variable is cache management. Measures:
 
 This isolates the exact trade-off the vLLM paper reports (paging saves
 memory but costs speed) and the exact fix vAttention claims (keep the
-memory saving, recover the speed). No GPU, no real model weights --
+memory saving, recover the speed). No GPU, no real model weights;
 this is a controlled systems microbenchmark, same spirit as how the
 papers themselves report kernel-level numbers before full end-to-end runs.
 """
