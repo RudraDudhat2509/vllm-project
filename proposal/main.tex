@@ -23,13 +23,11 @@
 
 \maketitle
 
-\begin{abstract}
-vLLM's PagedAttention serves large language models efficiently by storing each request's key value cache in small, non-contiguous physical blocks, cutting GPU memory waste from roughly 60 to 80 percent down to under 4 percent. The vLLM paper's own results show this comes at a real cost: its paged attention kernel runs 20 to 26 percent slower than a non-paged kernel, because every read now walks a block table instead of touching one contiguous span of memory. A follow-up system, vAttention, proposes recovering that cost by keeping the key value cache virtually contiguous while still committing physical memory on demand. This proposal reproduces both effects at small, controlled scale in pure PyTorch on CPU, since the team does not yet have GPU access. We implement three interchangeable key value cache backends behind one shared attention function and measure, directly, that a paged cache is substantially slower per decode step than a contiguous one, and that a virtually contiguous design recovers nearly all of that gap while preserving the same on demand memory efficiency. We report the working code, the measured numbers, and the honest limits of a CPU only, GPU free reproduction.
-\end{abstract}
+\noindent\textbf{\textit{Abstract.}} vLLM's PagedAttention serves large language models efficiently by storing each request's key value cache in small, non-contiguous physical blocks, cutting GPU memory waste from roughly 60 to 80 percent down to under 4 percent. The vLLM paper's own results show this comes at a real cost: its paged attention kernel runs 20 to 26 percent slower than a non-paged kernel, because every read now walks a block table instead of touching one contiguous span of memory. A follow-up system, vAttention, proposes recovering that cost by keeping the key value cache virtually contiguous while still committing physical memory on demand. This proposal reproduces both effects at small, controlled scale in pure PyTorch on CPU, since the team does not yet have GPU access. We implement three interchangeable key value cache backends behind one shared attention function and measure, directly, that a paged cache is substantially slower per decode step than a contiguous one, and that a virtually contiguous design recovers nearly all of that gap while preserving the same on demand memory efficiency. We report the working code, the measured numbers, and the honest limits of a CPU only, GPU free reproduction.
 
-\begin{IEEEkeywords}
-LLM serving, PagedAttention, KV cache, virtual memory management, vLLM, vAttention, GPU memory efficiency.
-\end{IEEEkeywords}
+\noindent\textbf{\textit{Index Terms.}} LLM serving, PagedAttention, KV cache, virtual memory management, vLLM, vAttention, GPU memory efficiency.
+
+\vspace{6pt}
 
 \section{Project Details}
 
