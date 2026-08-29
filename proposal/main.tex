@@ -65,6 +65,13 @@ We implement one shared decode-step attention function, a single new token query
 
 If GPU access becomes available (Section~\ref{sec:resources}), the stretch goal is to replace the synthetic backends with real fused attention kernels wired into a small open model such as GPT-2 or TinyLlama, and to measure end to end throughput and latency, closer to the original papers' own setup.
 
+\begin{figure}[!t]
+\centering
+\includegraphics[width=3.3in]{fig1}
+\caption{Our microbenchmark: 16 sequences, 4 layers, 8 heads, 256 decode steps, CPU only. Left: mean decode step latency. The paged reproduction is 332 percent slower than the naive contiguous baseline; our vAttention-style reproduction is only 7.2 percent slower. Right: physical KV-cache blocks committed over time. The naive baseline commits everything immediately, while paged and vAttention-style grow identically and on demand; the two lines overlap exactly by design, since both use the same block accounting.}
+\label{fig_1}
+\end{figure}
+
 \section{Resource and Dataset Availability}
 \label{sec:resources}
 
@@ -100,13 +107,6 @@ What differentiates this from simply restating the two papers is that we built a
 
 \bibliographystyle{IEEEtran}
 \bibliography{ref}
-
-\begin{figure}[!t]
-\centering
-\includegraphics[width=3.3in]{fig1}
-\caption{Our microbenchmark: 16 sequences, 4 layers, 8 heads, 256 decode steps, CPU only. Left: mean decode step latency. The paged reproduction is 332 percent slower than the naive contiguous baseline; our vAttention-style reproduction is only 7.2 percent slower. Right: physical KV-cache blocks committed over time. The naive baseline commits everything immediately, while paged and vAttention-style grow identically and on demand; the two lines overlap exactly by design, since both use the same block accounting.}
-\label{fig_1}
-\end{figure}
 
 \appendices
 \section*{AI Tool Disclosure}
