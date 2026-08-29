@@ -1,0 +1,95 @@
+\documentclass[lettersize,journal]{IEEEtran}
+\usepackage{amsmath,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{array}
+\usepackage[caption=false,font=normalsize,labelfont=sf,textfont=sf]{subfig}
+\usepackage{textcomp}
+\usepackage{stfloats}
+\usepackage{url}
+\usepackage{verbatim}
+\usepackage{graphicx}
+\usepackage{cite}
+\hyphenation{op-tical net-works semi-conduc-tor IEEE-Xplore}
+
+\begin{document}
+
+\title{Beyond PagedAttention: Reproducing and Mitigating KV-Cache Management Overhead in LLM Serving}
+
+\author{Rudra Dudhat-B24DS506, Mohak Arya-12341420, Vatsal Yadav-B24DS036}
+
+\maketitle
+
+\section{Project Details}
+\textbf{Criterion:} Code available -- address a limitation and propose a solution. vLLM is open source (\url{https://github.com/vllm-project/vllm}); we study its PagedAttention mechanism \cite{kwon2023efficient}, reproduce the overhead it introduces, and reproduce a proposed fix from follow-up research \cite{prabhu2024vattention}.
+
+Team Composition and Individual Contributions:
+\begin{itemize}
+    \item Member 1: Rudra Dudhat, B24DS506, rudramd@iitbhilai.ac.in -- literature review, system design, implementation of the naive/paged/vAttention-style KV-cache reproduction, benchmarking, and this proposal.
+    \item Member 2: Mohak Arya, 12341420, mohak@iitbhilai.ac.in -- extending the reproduction toward a real small-model integration (stretch goal), results verification.
+    \item Member 3: Vatsal Yadav, B24DS036, vatsal@iitbhilai.ac.in -- extending the reproduction toward a real small-model integration (stretch goal), presentation and viva preparation.
+\end{itemize}
+Note: implementation ownership will be tracked through pull requests on the project repository as the work progresses.
+
+\section{Problem Statement}
+High-throughput LLM serving requires batching many requests together, and each request carries a key-value (KV) cache that grows token by token. vLLM's PagedAttention \cite{kwon2023efficient} borrowed paging from operating systems: instead of pre-allocating each request's KV cache contiguously for the worst-case sequence length (which wastes 60--80\% of GPU memory to fragmentation and over-reservation), it stores KV cache in small fixed-size physical blocks allocated on demand, indexed by a per-request block table. This is why vLLM can serve much larger batches than earlier engines.
+
+This memory win is not free. The vLLM paper's own ablation reports its PagedAttention kernel is 20--26\% slower than a non-paged FasterTransformer kernel, because the kernel now has to look up the block table and branch across non-contiguous memory on every read. Independent benchmarks report vLLM's paged decode kernel running up to 2.8x higher latency than FlashAttention-2 on comparable models, and integrating a new fused attention kernel into vLLM's paged layout required over 600 lines of changes across 15 files -- real engineering friction, not just a micro-cost. Microsoft Research's vAttention \cite{prabhu2024vattention} (ASPLOS 2025) responds directly to this: it keeps the KV cache virtually contiguous while still committing physical GPU memory on demand, using CUDA's low-level virtual memory APIs, and reports up to 1.97x faster decoding than vLLM. This is an active, unresolved question in the field, not settled history -- there is an open GitHub issue on vllm-project/vllm (\#17612) proposing to adopt this idea into vLLM itself.
+
+Our scope: we do not have GPU access at this proposal stage, so we are not attempting to beat either paper's numbers. Instead we reproduce, at small controlled scale in pure PyTorch on CPU, (a) the qualitative overhead that PagedAttention's non-contiguous block addressing causes relative to a contiguous KV cache, and (b) the mechanism by which vAttention's ``virtually contiguous, physically paged'' idea recovers that overhead while preserving the same on-demand memory efficiency. This tells us, hands-on, which part of the memory/speed trade-off is inherent to paging itself and which part is an artifact of PagedAttention's specific addressing choice.
+
+\section{Methodology}
+We implement one shared decode-step attention function (a single new-token query attending over the full KV history) and three interchangeable KV-cache backends, so the only variable across experiments is cache management, never the attention math itself:
+\begin{itemize}
+    \item \textbf{Naive contiguous cache} -- pre-allocates K/V for the full maximum sequence length up front. Reads are a plain tensor slice: fast, but commits worst-case physical memory immediately regardless of actual usage. This is how pre-PagedAttention serving engines behaved.
+    \item \textbf{Paged cache (vLLM-style reproduction)} -- physical memory is committed in fixed-size blocks (block size 16, matching vLLM's default) only as a sequence grows. Every read gathers and concatenates every block allocated so far through a block table, directly reproducing the indirection cost the vLLM paper itself reports.
+    \item \textbf{vAttention-style cache (our reproduction of the fix)} -- uses the exact same on-demand, block-granular physical memory accounting as the paged cache, but exposes reads through a virtually contiguous buffer extended by one token per step (O(1) append) instead of re-gathering every block on every step (O(blocks so far)). On a real GPU, that contiguity comes from CUDA virtual memory APIs (\texttt{cuMemAddressReserve}/\texttt{cuMemMap}); without GPU access at this stage we emulate the same behavioral effect in plain PyTorch, and we say so explicitly rather than overstating this as a CUDA-level reproduction.
+\end{itemize}
+
+Benchmark: decode a batch of 16 sequences (4 layers, 8 heads, 64 head-dim) for 256 steps under all three backends, using identical random Q/K/V tensors at every step, so any timing difference comes only from cache management. We measure (i) mean wall-clock time per decode step and (ii) physical KV blocks committed over time, using analytical block-count accounting (the same convention the vLLM and vAttention papers themselves use to report memory savings), since real OS/CUDA-level physical page tracking is not available without GPU access.
+
+If GPU access becomes available (Section~IV), the stretch goal is to replace the synthetic backends with real fused attention kernels wired into a small open model (e.g.\ GPT-2 or TinyLlama scale) and measure end-to-end throughput/latency, closer to the original papers' own setup.
+
+\section{Resource and Dataset Availability}
+No labelled dataset is required for the core reproduction: it is a systems microbenchmark over synthetic random Q/K/V tensors, which mirrors how the vLLM and vAttention papers themselves report their controlled kernel-level benchmarks before end-to-end serving numbers. For the stretch goal (real model integration) we would use short prompts from a public conversational dataset such as ShareGPT, the same source the original vLLM evaluation used, purely to get a realistic distribution of sequence lengths -- not as a task-accuracy benchmark.
+
+Hardware: the current stage runs entirely on CPU (verified on Python 3.12.7 / PyTorch 2.10). We do not currently have GPU access. For the stretch goal we plan to use Kaggle's free weekly GPU quota (30 hours, P100/T4) or Google Colab's free tier -- both no-cost options available to the team.
+
+Software: PyTorch and Matplotlib. The vLLM (\url{https://github.com/vllm-project/vllm}) and vAttention (\url{https://github.com/microsoft/vattention}) source repositories are read as reference for the block-table and CUDA virtual-memory mechanisms respectively; they are not used as runtime dependencies of our reproduction.
+
+\section{Limitations Found}
+Our microbenchmark measures the mechanism, not production-grade performance: our paged backend's per-block Python loop and \texttt{torch.cat} calls exaggerate the overhead relative to vLLM's real fused CUDA kernel -- we measured a 332\% mean step-time increase versus the paper's own reported 20--26\%, because we have no kernel fusion. The direction of the effect (paging is slower; virtual contiguity recovers most of it) is what we validated here, not the exact magnitude, and the proposal is explicit about that gap rather than letting the number stand unqualified.
+
+Our vAttention-style backend is a behavioral emulation, not a CUDA virtual-memory reproduction: it pre-allocates one contiguous PyTorch buffer to get O(1) contiguous reads, so it does not itself reduce our Python process's RAM the way real CUDA VMM's lazy physical-page commit would. Only our analytical block-count accounting (matching the papers' own reporting convention) reflects the memory saving we are actually claiming.
+
+No real language model or real request workload is used yet -- Q/K/V are random tensors, so we make no claim yet about output quality or realistic sequence-length distributions; that is the explicit stretch goal once GPU access is available.
+
+What differentiates this from simply restating the two papers: we built a single, shared-interface implementation that isolates both claims side by side under our own control and measurement, rather than only citing the papers' reported numbers, and we can defend every design choice in it.
+
+\section{Expected Outcomes}
+\begin{itemize}
+    \item A working, open-source, small-scale reproduction (this repository) implementing all three KV-cache strategies behind a shared attention interface, with a repeatable benchmark script and generated plots.
+    \item Quantified evidence, from our own run, that a non-contiguous (paged) KV cache is meaningfully slower per decode step than a contiguous one (332\% slower in our unoptimized setting), and that a virtually-contiguous-but-physically-paged design recovers nearly all of that gap (7.2\% slower than the naive baseline) while preserving the same on-demand memory-efficiency curve as the paged cache (Fig.~1).
+    \item If GPU access becomes available: extension to a real small model and real fused kernels, to check whether the same relative pattern survives outside a Python-level microbenchmark -- our stated stretch target, not required for this checkpoint.
+    \item Deliverables: this GitHub repository (code, results, and this proposal) and a viva-ready explanation of why non-contiguous memory addressing costs attention kernels speed, and why decoupling virtual contiguity from physical block allocation -- vAttention's actual contribution -- recovers it.
+\end{itemize}
+
+\nocite{kwon2023efficient}
+\nocite{prabhu2024vattention}
+\nocite{agrawal2024sarathi}
+\nocite{vaswani2017attention}
+
+\bibliographystyle{IEEEtran}
+\bibliography{ref}
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=3.2in]{fig1}
+\caption{Our microbenchmark (16 sequences, 4 layers, 8 heads, 256 decode steps, CPU-only). Left: mean decode-step latency -- the paged reproduction is 332\% slower than the naive contiguous baseline; our vAttention-style reproduction is only 7.2\% slower. Right: physical KV-cache blocks committed over time -- the naive baseline commits everything immediately, while paged and vAttention-style grow identically and on demand (the two lines overlap exactly, by design, since both use the same block accounting).}
+\label{fig_1}
+\end{figure}
+
+{\appendix
+Claude (Anthropic, Claude Code CLI) was used for: (1) literature search and summarization of PagedAttention/vAttention/Sarathi-Serve follow-up work to ground the problem statement in cited, verifiable claims rather than assumption; (2) drafting the initial Python implementation of the three KV-cache backends and the benchmark/plotting scripts, to the team's specification, which the team then ran, inspected, and verified against the papers' claims; and (3) drafting this proposal document from the team's decisions. All reported numbers in this proposal come from code the team has run directly (\texttt{src/benchmark.py} in the repository), not from the papers or from unverified generated text.}
+
+\end{document}
