@@ -45,7 +45,25 @@ Implementation ownership is tracked through pull requests on the project reposit
 
 \IEEEPARstart{H}{igh} throughput LLM serving requires batching many requests together, and each request carries a key value (KV) cache that grows one token at a time. vLLM's PagedAttention \cite{kwon2023efficient} borrows paging from operating systems: instead of pre-allocating each request's KV cache contiguously for a worst case sequence length, which wastes 60 to 80 percent of GPU memory to fragmentation and over-reservation, it stores KV cache in small fixed size physical blocks allocated on demand, indexed by a per-request block table. This is the reason vLLM can serve far larger batches than earlier engines.
 
-That memory win is not free. The vLLM paper's own ablation reports its PagedAttention kernel running 20 to 26 percent slower than a non-paged FasterTransformer kernel, because the kernel now has to look up the block table and branch across non-contiguous memory on every read. Independent benchmarks report vLLM's paged decode kernel running up to 2.8 times higher latency than FlashAttention-2 on comparable models, and integrating a new fused attention kernel into vLLM's paged layout required over 600 lines of changes across 15 files: real engineering friction, not a minor cost. Microsoft Research's vAttention \cite{prabhu2024vattention} (ASPLOS 2025) responds directly to this. It keeps the KV cache virtually contiguous while still committing physical GPU memory on demand, using CUDA's low level virtual memory APIs, and reports up to 1.97 times faster decoding than vLLM. This is an active, unresolved question in the field rather than settled history: there is an open GitHub issue on vllm-project/vllm (issue \#17612) proposing to adopt this idea into vLLM itself.
+That memory win is not free. The vLLM paper's own ablation reports its PagedAttention kernel running 20 to 26 percent slower than a non-paged FasterTransformer kernel, because the kernel now has to look up the block table and branch across non-contiguous memory on every read. Independent benchmarks report vLLM's paged decode kernel running up to 2.8 times higher latency than FlashAttention-2 on comparable models, and integrating a new fused attention kernel into vLLM's paged layout required over 600 lines of changes across 15 files: real engineering friction, not a minor cost. Microsoft Research's vAttention \cite{prabhu2024vattention} (ASPLOS 2025) responds directly to this. It keeps the KV cache virtually contiguous while still committing physical GPU memory on demand, using CUDA's low level virtual memory APIs, and reports up to 1.97 times faster decoding than vLLM. This is an active, unresolved question in the field rather than settled history: there is an open GitHub issue on vllm-project/vllm (issue \#17612) proposing to adopt this idea into vLLM itself. Table~\ref{tab:overheads} summarizes these reported numbers.
+
+\begin{table}[!t]
+\caption{Reported overheads and fixes from prior work}
+\label{tab:overheads}
+\centering
+\begin{tabular}{@{}p{5.1cm}p{2.2cm}@{}}
+\toprule
+\textbf{Reported finding} & \textbf{Value} \\
+\midrule
+PagedAttention kernel vs.\ non-paged FasterTransformer kernel \cite{kwon2023efficient} & 20\% to 26\% slower \\
+vLLM paged decode kernel vs.\ FlashAttention-2 & up to 2.8x slower \\
+Code changes to integrate a new fused kernel into vLLM's paged layout & 600+ lines, 15 files \\
+vAttention decoding vs.\ vLLM \cite{prabhu2024vattention} & up to 1.97x faster \\
+KV cache memory waste, naive worst case reservation & 60\% to 80\% \\
+KV cache memory waste, PagedAttention & under 4\% \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 Our scope is deliberately narrow. The team does not have GPU access at this proposal stage, so we are not attempting to beat either paper's numbers. Instead we reproduce, at small controlled scale in pure PyTorch on CPU: (a) the qualitative overhead that PagedAttention's non-contiguous block addressing causes relative to a contiguous KV cache, and (b) the mechanism by which vAttention's virtually contiguous, physically paged idea recovers that overhead while preserving the same on demand memory efficiency. This tells us, hands on, which part of the memory and speed trade-off is inherent to paging itself, and which part is an artifact of PagedAttention's specific addressing choice.
 
@@ -59,9 +77,41 @@ We implement one shared decode-step attention function, a single new token query
     \item \textbf{vAttention-style cache (our reproduction of the fix).} Uses the exact same on demand, block granular physical memory accounting as the paged cache, but exposes reads through a virtually contiguous buffer extended by one token per step, an O(1) append, instead of re-gathering every block on every step, an O(blocks so far) operation. On a real GPU that contiguity comes from CUDA virtual memory APIs (\texttt{cuMemAddressReserve} and \texttt{cuMemMap}). Without GPU access at this stage we emulate the same behavioral effect in plain PyTorch, and we state this plainly rather than overstating it as a CUDA level reproduction.
 \end{itemize}
 
+Table~\ref{tab:backends} summarizes the three backends side by side.
+
+\begin{table}[!t]
+\caption{KV-cache backends implemented}
+\label{tab:backends}
+\centering
+\begin{tabular}{@{}p{1.9cm}p{2.7cm}p{2.7cm}@{}}
+\toprule
+\textbf{Backend} & \textbf{Physical allocation} & \textbf{Per-step read cost} \\
+\midrule
+Naive contiguous & Full max length, committed up front & O(1), plain slice \\
+Paged (vLLM-style) & Fixed size blocks, on demand & O(blocks so far), gather and concatenate \\
+vAttention-style (ours) & Fixed size blocks, on demand, same as paged & O(1), contiguous append \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \textbf{Benchmark.} We decode a batch of 16 sequences (4 layers, 8 heads, 64 dimensional heads) for 256 steps under all three backends, using identical random Q, K, and V tensors at every step, so any timing difference comes only from cache management. We measure (i) mean wall clock time per decode step, and (ii) physical KV blocks committed over time, using analytical block count accounting, the same convention the vLLM and vAttention papers themselves use to report memory savings, since real OS or CUDA level physical page tracking is not available without GPU access.
 
 If GPU access becomes available (Section~\ref{sec:resources}), the stretch goal is to replace the synthetic backends with real fused attention kernels wired into a small open model such as GPT-2 or TinyLlama, and to measure end to end throughput and latency, closer to the original papers' own setup.
+
+\begin{table}[!t]
+\caption{Microbenchmark results (16 sequences, 4 layers, 8 heads, 256 decode steps, CPU only)}
+\label{tab:results}
+\centering
+\begin{tabular}{@{}p{2.4cm}p{1.7cm}p{1.7cm}@{}}
+\toprule
+\textbf{Backend} & \textbf{Mean step time} & \textbf{vs.\ naive} \\
+\midrule
+Naive contiguous & 6.10 ms & baseline \\
+Paged (vLLM-style) & 26.38 ms & +332\% \\
+vAttention-style (ours) & 6.54 ms & +7.2\% \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \begin{figure}[!t]
 \centering
@@ -93,7 +143,7 @@ What differentiates this from simply restating the two papers is that we built a
 
 \begin{itemize}
     \item A working, open source, small scale reproduction (this repository) implementing all three KV-cache strategies behind a shared attention interface, with a repeatable benchmark script and generated plots.
-    \item Quantified evidence, from our own run, that a non-contiguous, paged KV cache is meaningfully slower per decode step than a contiguous one (332 percent slower in our unoptimized setting), and that a virtually contiguous but physically paged design recovers nearly all of that gap (7.2 percent slower than the naive baseline) while preserving the same on demand memory efficiency curve as the paged cache (Fig.~\ref{fig_1}).
+    \item Quantified evidence, from our own run, that a non-contiguous, paged KV cache is meaningfully slower per decode step than a contiguous one (332 percent slower in our unoptimized setting), and that a virtually contiguous but physically paged design recovers nearly all of that gap (7.2 percent slower than the naive baseline) while preserving the same on demand memory efficiency curve as the paged cache (Table~\ref{tab:results}, Fig.~\ref{fig_1}).
     \item If GPU access becomes available: extension to a real small model and real fused kernels, to check whether the same relative pattern survives outside a Python level microbenchmark. This is our stated stretch target and is not required for this checkpoint.
     \item Deliverables: this GitHub repository (code, results, and this proposal), and a viva ready explanation of why non-contiguous memory addressing costs attention kernels speed, and why decoupling virtual contiguity from physical block allocation, vAttention's actual contribution, recovers it.
 \end{itemize}
