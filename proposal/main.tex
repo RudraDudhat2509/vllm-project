@@ -35,11 +35,10 @@
 
 \textbf{Team composition and individual contributions.}
 \begin{itemize}
-    \item \textbf{Member 1:} Rudra Dudhat, B24DS506, rudramd@iitbhilai.ac.in. Literature review, system design, implementation of the naive, paged, and vAttention style key value cache reproduction, benchmarking, and this proposal.
-    \item \textbf{Member 2:} Mohak Arya, 12341420, mohak@iitbhilai.ac.in. Extending the reproduction toward a real small model integration (stretch goal), results verification.
-    \item \textbf{Member 3:} Vatsal Yadav, B24DS036, vatsal@iitbhilai.ac.in. Extending the reproduction toward a real small model integration (stretch goal), presentation and viva preparation.
+    \item \textbf{Member 1:} Rudra Dudhat, B24DS506, rudramd@iitbhilai.ac.in. Literature review, project scaffold, and most of the coding.
+    \item \textbf{Member 2:} Vatsal Yadav, B24DS036, vatsal@iitbhilai.ac.in. Verifying the results and running further experiments for the visualizations.
+    \item \textbf{Member 3:} Mohak Arya, 12341420, mohak@iitbhilai.ac.in. Ideation, and putting together deliverables such as this proposal.
 \end{itemize}
-Implementation ownership is tracked through pull requests on the project repository as the work progresses.
 
 \section{Problem Statement}
 
@@ -65,7 +64,7 @@ KV cache memory waste, PagedAttention & under 4\% \\
 \end{tabular}
 \end{table}
 
-Our scope is deliberately narrow. The team does not have GPU access at this proposal stage, so we are not attempting to beat either paper's numbers. Instead we reproduce, at small controlled scale in pure PyTorch on CPU: (a) the qualitative overhead that PagedAttention's non-contiguous block addressing causes relative to a contiguous KV cache, and (b) the mechanism by which vAttention's virtually contiguous, physically paged idea recovers that overhead while preserving the same on demand memory efficiency. This tells us, hands on, which part of the memory and speed trade-off is inherent to paging itself, and which part is an artifact of PagedAttention's specific addressing choice.
+Our scope is deliberately narrow. The team does not have GPU access at this proposal stage, so we are not attempting to beat either paper's numbers. Instead we reproduce, at small controlled scale in pure PyTorch on CPU: (a) the qualitative overhead that PagedAttention's non-contiguous block addressing causes relative to a contiguous KV cache, and (b) the mechanism by which vAttention's virtually contiguous, physically paged idea recovers that overhead while preserving the same on demand memory efficiency. This tells us which part of the tradeoff is actually inherent to paging, and which part just comes from how PagedAttention specifically does it.
 
 \section{Methodology}
 
@@ -131,13 +130,13 @@ No labelled dataset is required for the core reproduction. It is a systems micro
 
 \section{Limitations Found}
 
-Our microbenchmark measures the mechanism, not production grade performance. Our paged backend's per-block Python loop and \texttt{torch.cat} calls exaggerate the overhead relative to vLLM's real fused CUDA kernel: we measured a 332 percent mean step time increase versus the paper's own reported 20 to 26 percent, because we have no kernel fusion. The direction of the effect (paging is slower; virtual contiguity recovers most of it) is what we validated here, not the exact magnitude, and the proposal states that gap explicitly rather than leaving the number unqualified.
+Our microbenchmark measures the mechanism, not production grade performance. Our paged backend's per-block Python loop and \texttt{torch.cat} calls exaggerate the overhead relative to vLLM's real fused CUDA kernel: we measured a 332 percent mean step time increase versus the paper's own reported 20 to 26 percent, because we have no kernel fusion. What we are actually claiming is the direction of the effect, paging is slower and virtual contiguity recovers most of it, not the exact magnitude. We are stating that gap upfront instead of leaving the number unqualified.
 
 Our vAttention style backend is a behavioral emulation, not a CUDA virtual memory reproduction. It pre-allocates one contiguous PyTorch buffer to obtain O(1) contiguous reads, so it does not itself reduce our Python process's RAM the way real CUDA VMM's lazy physical page commit would. Only our analytical block count accounting, matching the papers' own reporting convention, reflects the memory saving we are actually claiming.
 
 No real language model or real request workload is used yet. Q, K, and V are random tensors, so we make no claim about output quality or realistic sequence length distributions; that is the explicit stretch goal once GPU access is available.
 
-What differentiates this from simply restating the two papers is that we built a single, shared interface implementation that isolates both claims side by side under our own control and measurement, rather than only citing the papers' reported numbers, and we can defend every design choice in it.
+This is not just restating the two papers. We built one shared implementation that isolates both claims side by side, under our own measurement, and we can defend every design choice in it.
 
 \section{Expected Outcomes}
 
@@ -145,7 +144,7 @@ What differentiates this from simply restating the two papers is that we built a
     \item A working, open source, small scale reproduction (this repository) implementing all three KV-cache strategies behind a shared attention interface, with a repeatable benchmark script and generated plots.
     \item Quantified evidence, from our own run, that a non-contiguous, paged KV cache is meaningfully slower per decode step than a contiguous one (332 percent slower in our unoptimized setting), and that a virtually contiguous but physically paged design recovers nearly all of that gap (7.2 percent slower than the naive baseline) while preserving the same on demand memory efficiency curve as the paged cache (Table~\ref{tab:results}, Fig.~\ref{fig_1}).
     \item If GPU access becomes available: extension to a real small model and real fused kernels, to check whether the same relative pattern survives outside a Python level microbenchmark. This is our stated stretch target and is not required for this checkpoint.
-    \item Deliverables: this GitHub repository (code, results, and this proposal), and a viva ready explanation of why non-contiguous memory addressing costs attention kernels speed, and why decoupling virtual contiguity from physical block allocation, vAttention's actual contribution, recovers it.
+    \item Deliverables: this GitHub repository (code, results, and this proposal), and a viva ready explanation of why non-contiguous memory costs attention speed, and why vAttention's fix, decoupling virtual contiguity from physical allocation, recovers it.
 \end{itemize}
 
 \nocite{kwon2023efficient}
@@ -158,6 +157,6 @@ What differentiates this from simply restating the two papers is that we built a
 
 \appendices
 \section*{AI Tool Disclosure}
-Claude (Anthropic, Claude Code CLI) was used in three ways: for literature search and summarization of PagedAttention, vAttention, and Sarathi-Serve follow-up work, to ground the problem statement in cited, verifiable claims rather than assumption; for drafting the initial Python implementation of the three KV-cache backends and the benchmark and plotting scripts to the team's specification, which the team then ran, inspected, and verified against the papers' claims; and for drafting this proposal document from the team's decisions. Every number reported in this proposal comes from code the team has run directly (\texttt{src/benchmark.py} in the repository), not from the papers and not from unverified generated text.
+Claude (Anthropic, Claude Code CLI) was used for this project. It helped search and summarize the PagedAttention, vAttention, and Sarathi-Serve literature so the problem statement is grounded in cited, verifiable claims. It also helped draft the initial Python implementation of the three KV-cache backends and the benchmark and plotting scripts, which we then ran, inspected, and checked against the papers' claims ourselves, and helped draft this proposal from our own decisions. Every number in this proposal comes from code we actually ran (\texttt{src/benchmark.py} in the repository), not from the papers and not from generated text we did not verify.
 
 \end{document}
