@@ -49,9 +49,9 @@ The paged reproduction is slower than the paper's own reported 20 to 26 percent,
 
 | member | roll no | role |
 |---|---|---|
-| Rudra Dudhat | B24DS506 | system design, implementation, benchmarking, proposal |
-| Mohak Arya | 12341420 | stretch goal real model integration, results verification |
-| Vatsal Yadav | B24DS036 | stretch goal real model integration, presentation and viva |
+| Rudra Dudhat | B24DS506 | literature review, project scaffold, most of the coding |
+| Vatsal Yadav | B24DS036 | verifying results, further experiments for visualizations |
+| Mohak Arya | 12341420 | ideation, preparing deliverables such as the proposal |
 
 ## AI disclosure
 
