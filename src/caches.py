@@ -26,16 +26,27 @@ can swap them in and out without touching the attention math:
                            behavioral effect in plain PyTorch since this
                            proposal stage has no GPU access.
 
-  AdaptiveBlockCache     our own idea, not in either paper: use small
-                           blocks early in a sequence and bigger blocks once
-                           it has grown past a threshold. Most real requests
-                           are short, so small blocks early keep internal
-                           fragmentation tight for the common case. Sequences
-                           that keep going get switched to bigger blocks, so
-                           there are fewer scattered fragments to gather.
-                           Same idea as size classes in a real allocator
-                           (glibc malloc) or young/old generations in a GC,
-                           applied to KV-cache blocks instead.
+  AdaptiveBlockCache     our own idea, not in either paper: a single
+                           contiguous buffer per layer, like VAttentionCache,
+                           but it is not preallocated to max_seq_len up
+                           front. It grows lazily, in chunks, the same way a
+                           dynamic array (Python list, C++ vector) doubles
+                           when it runs out of room: small chunks early
+                           (most real requests are short, so this keeps
+                           wasted tail space tight for the common case),
+                           bigger chunks once a sequence survives past a
+                           threshold (fewer reallocations for the sequences
+                           that keep going). Same idea as size classes in a
+                           real allocator (glibc malloc) or young/old
+                           generations in a GC, applied to KV-cache growth.
+                           Reads are always a plain slice of one tensor, the
+                           same O(1) read path as VAttentionCache, so it is
+                           never slower for the reason PagedCache is: it
+                           never re-gathers per-sequence block lists, there
+                           are none. The only extra cost is the occasional
+                           grow-and-copy when a chunk fills up, amortized
+                           over the whole run the same way dynamic array
+                           growth is.
 
 All four report physical_blocks_used(t): an analytical block count, not
 measured process RSS. We track it this way because Python/CPU can't emulate
@@ -128,59 +139,65 @@ class VAttentionCache:
 
 class AdaptiveBlockCache:
     """
-    Same grow-a-list-of-blocks pattern as PagedCache, one difference:
-    blocks aren't all the same size. Early blocks are small (less wasted
-    space if the sequence ends soon, which most do). Once a sequence
-    passes warmup_tokens, later blocks are bigger (fewer fragments to
-    gather for the sequences that keep going). Both sizes derive from the
-    same block_size the other backends use, so the call site stays
-    identical: block_size // 2 for the early blocks, block_size * 4 for
-    the later ones, switching after 4 * block_size tokens.
+    One contiguous buffer per layer, holding the whole batch, like
+    VAttentionCache. Reads are a plain slice, same O(1) read path, so this
+    is never slower for the reason PagedCache is: there is no per-sequence
+    block list to re-gather, there is nothing to re-gather at all.
+
+    The difference from VAttentionCache is that nothing is preallocated to
+    max_seq_len up front. The buffer grows lazily, in chunks, the same way
+    a dynamic array (Python list, C++ vector) doubles when it runs out of
+    room: small chunks early (block_size // 2), since most real requests
+    are short and this keeps wasted tail space tight for the common case,
+    bigger chunks once a sequence survives past warmup_tokens (block_size *
+    4 tokens in), since fewer, bigger reallocations are cheaper for the
+    sequences that keep going. Same idea as size classes in a real
+    allocator (glibc malloc) or young/old generations in a GC, applied to
+    KV-cache growth. The only extra cost versus VAttentionCache is the
+    occasional grow-and-copy when a chunk fills up, amortized over the
+    whole run the same way dynamic array growth is, so it stays rare.
+
+    PagedCache and VAttentionCache are both deliberately left untouched:
+    PagedCache has to stay a faithful reproduction of the real block-table
+    re-gather cost the vLLM paper reports, and VAttentionCache has to stay
+    a faithful reproduction of vAttention's fixed-block, fully-preallocated
+    fix. AdaptiveBlockCache is the one backend we are free to redesign.
     """
     def __init__(self, batch_size, n_layers, n_heads, head_dim, max_seq_len, block_size):
-        self.small_block_size = block_size // 2
-        self.large_block_size = block_size * 4
+        self.small_chunk = block_size // 2
+        self.large_chunk = block_size * 4
         self.warmup_tokens = block_size * 4
         self.batch_size = batch_size
         self.n_layers = n_layers
         self.n_heads = n_heads
         self.head_dim = head_dim
-        self.k_blocks = [[[] for _ in range(batch_size)] for _ in range(n_layers)]
-        self.v_blocks = [[[] for _ in range(batch_size)] for _ in range(n_layers)]
-        # empty slots left in the current (last) block, per layer. Sizing only
-        # depends on t, so every sequence in the batch has the same slot count,
-        # no need to track it per batch too.
-        self.slots_left = [0 for _ in range(n_layers)]
+        self.K = [None for _ in range(n_layers)]
+        self.V = [None for _ in range(n_layers)]
+        self.capacity = [0 for _ in range(n_layers)]
+        self.num_chunks = [0 for _ in range(n_layers)]
 
-    def _next_block_size(self, tokens_so_far):
-        return self.small_block_size if tokens_so_far < self.warmup_tokens else self.large_block_size
+    def _next_chunk_size(self, tokens_so_far):
+        return self.small_chunk if tokens_so_far < self.warmup_tokens else self.large_chunk
 
     def append_and_read(self, layer, t, k_new, v_new):
-        if self.slots_left[layer] == 0:
-            size = self._next_block_size(t)
-            for b in range(self.batch_size):
-                self.k_blocks[layer][b].append(torch.zeros(size, self.n_heads, self.head_dim))
-                self.v_blocks[layer][b].append(torch.zeros(size, self.n_heads, self.head_dim))
-            self.slots_left[layer] = size
+        if t == self.capacity[layer]:  # current buffer is full, grow it
+            grow = self._next_chunk_size(t)
+            new_capacity = self.capacity[layer] + grow
+            new_K = torch.zeros(self.batch_size, new_capacity, self.n_heads, self.head_dim)
+            new_V = torch.zeros_like(new_K)
+            if self.K[layer] is not None:
+                new_K[:, : self.capacity[layer]] = self.K[layer]
+                new_V[:, : self.capacity[layer]] = self.V[layer]
+            self.K[layer] = new_K
+            self.V[layer] = new_V
+            self.capacity[layer] = new_capacity
+            self.num_chunks[layer] += 1
 
-        offset = self.k_blocks[layer][0][-1].shape[0] - self.slots_left[layer]
-        for b in range(self.batch_size):
-            self.k_blocks[layer][b][-1][offset] = k_new[b, :, 0, :]
-            self.v_blocks[layer][b][-1][offset] = v_new[b, :, 0, :]
-        self.slots_left[layer] -= 1
-
-        # same gather + concat as PagedCache, just over unevenly sized blocks
-        k_hist_batch, v_hist_batch = [], []
-        for b in range(self.batch_size):
-            k_cat = torch.cat(self.k_blocks[layer][b], dim=0)[: t + 1]
-            v_cat = torch.cat(self.v_blocks[layer][b], dim=0)[: t + 1]
-            k_hist_batch.append(k_cat)
-            v_hist_batch.append(v_cat)
-        k_hist = torch.stack(k_hist_batch, dim=0).permute(0, 2, 1, 3)
-        v_hist = torch.stack(v_hist_batch, dim=0).permute(0, 2, 1, 3)
+        self.K[layer][:, t] = k_new.squeeze(2)
+        self.V[layer][:, t] = v_new.squeeze(2)
+        k_hist = self.K[layer][:, : t + 1].permute(0, 2, 1, 3)
+        v_hist = self.V[layer][:, : t + 1].permute(0, 2, 1, 3)
         return k_hist, v_hist
 
     def physical_blocks_used(self, t):
-        # sizing decisions only depend on t, not on content, so every
-        # (layer, batch) has allocated the same number of blocks by now
-        return self.batch_size * self.n_layers * len(self.k_blocks[0][0])
+        return self.batch_size * self.n_layers * self.num_chunks[0]

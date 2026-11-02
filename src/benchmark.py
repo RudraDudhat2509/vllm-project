@@ -61,15 +61,17 @@ def main():
         "adaptive_block": AdaptiveBlockCache,
     }
     names = list(strategies)
-    n_trials = len(names)  # one trial per strategy, so each gets a turn
-                            # running first, so no single strategy is always
-                            # measured during the most loaded part of the run
+    n_trials = 3 * len(names)  # several full rotations, so each strategy gets
+                                # many turns running first, and CPU wall-clock
+                                # noise (which is large run to run) averages out
+                                # instead of deciding the headline number
 
     pooled_step_times = {name: [] for name in strategies}
     block_counts_by_name = {}
 
     for trial in range(n_trials):
-        order = names[trial:] + names[:trial]  # rotate the starting position
+        start = trial % len(names)
+        order = names[start:] + names[:start]  # rotate the starting position
         print(f"trial {trial + 1}/{n_trials}, order: {order}")
         for name in order:
             step_times, block_counts = run_decode(strategies[name])

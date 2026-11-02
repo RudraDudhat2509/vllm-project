@@ -1,10 +1,10 @@
 {
   "naive_contiguous": {
-    "total_decode_time_s": 9.512425300257746,
-    "mean_step_time_ms": 9.667098882375758,
-    "p50_step_time_ms": 9.443399429321289,
-    "p95_step_time_ms": 16.571319580078125,
-    "p99_step_time_ms": 19.127748489379883,
+    "total_decode_time_s": 22.823286100057885,
+    "mean_step_time_ms": 7.731465481049419,
+    "p50_step_time_ms": 7.133999824523926,
+    "p95_step_time_ms": 15.817767143249512,
+    "p99_step_time_ms": 21.785682678222656,
     "final_physical_blocks": 1024,
     "block_counts_over_time": [
       1024,
@@ -267,11 +267,11 @@
     "slowdown_vs_naive_pct": 0.0
   },
   "paged": {
-    "total_decode_time_s": 36.23794940006337,
-    "mean_step_time_ms": 36.8271843496579,
-    "p50_step_time_ms": 36.687801361083984,
-    "p95_step_time_ms": 59.25299072265625,
-    "p99_step_time_ms": 67.01968383789062,
+    "total_decode_time_s": 86.78496520020417,
+    "mean_step_time_ms": 29.398700948578647,
+    "p50_step_time_ms": 25.528900146484375,
+    "p95_step_time_ms": 62.804752349853516,
+    "p99_step_time_ms": 76.3540267944336,
     "final_physical_blocks": 1024,
     "block_counts_over_time": [
       64,
@@ -531,14 +531,14 @@
       1024,
       1024
     ],
-    "slowdown_vs_naive_pct": 280.95383938606574
+    "slowdown_vs_naive_pct": 280.2474578802395
   },
   "vattention_style": {
-    "total_decode_time_s": 9.260511600034079,
-    "mean_step_time_ms": 9.411089024424877,
-    "p50_step_time_ms": 9.28219985961914,
-    "p95_step_time_ms": 16.153715133666992,
-    "p99_step_time_ms": 18.50676155090332,
+    "total_decode_time_s": 24.354413199791452,
+    "mean_step_time_ms": 8.250139972829082,
+    "p50_step_time_ms": 6.75570011138916,
+    "p95_step_time_ms": 18.838214874267578,
+    "p99_step_time_ms": 22.57849884033203,
     "final_physical_blocks": 1024,
     "block_counts_over_time": [
       64,
@@ -798,14 +798,14 @@
       1024,
       1024
     ],
-    "slowdown_vs_naive_pct": -2.6482594319751542
+    "slowdown_vs_naive_pct": 6.708618088653247
   },
   "adaptive_block": {
-    "total_decode_time_s": 41.58686340015265,
-    "mean_step_time_ms": 42.26307256113074,
-    "p50_step_time_ms": 43.423301696777344,
-    "p95_step_time_ms": 65.8716049194336,
-    "p99_step_time_ms": 69.56715393066406,
+    "total_decode_time_s": 27.951570699980948,
+    "mean_step_time_ms": 9.46868926151116,
+    "p50_step_time_ms": 7.91670036315918,
+    "p95_step_time_ms": 20.302099227905273,
+    "p99_step_time_ms": 24.239116668701172,
     "final_physical_blocks": 704,
     "block_counts_over_time": [
       64,
@@ -1065,6 +1065,6 @@
       704,
       704
     ],
-    "slowdown_vs_naive_pct": 337.1846515212669
+    "slowdown_vs_naive_pct": 22.46952773338829
   }
 }

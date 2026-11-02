@@ -35,18 +35,18 @@ python plot.py          # writes ../results/benchmark.png
 
 ## What we found
 
-Last run: 16 sequences, 4 layers, 8 heads, 256 decode steps, CPU only, pooled across 4 trials with rotated run order so machine load drift cannot unfairly penalize whichever backend happens to run last.
+Last run: 16 sequences, 4 layers, 8 heads, 256 decode steps, CPU only, pooled across 12 trials with rotated run order so machine load drift cannot unfairly penalize whichever backend happens to run last.
 
 | backend | mean step time | vs naive | physical memory |
 |---|---|---|---|
-| naive contiguous | 9.67 ms | baseline | commits everything up front |
-| paged (vLLM-style) | 36.83 ms | **+281% slower** | grows on demand |
-| vAttention-style (ours) | 9.41 ms | within noise of naive | grows on demand, identical to paged |
-| adaptive block (ours) | 42.26 ms | **+337% slower** | grows on demand, ~30% fewer blocks than paged |
+| naive contiguous | 7.73 ms | baseline | commits everything up front |
+| paged (vLLM-style) | 29.40 ms | **+280% slower** | grows on demand, fixed block size |
+| vAttention-style (ours) | 8.25 ms | within noise of naive | grows on demand, identical to paged |
+| adaptive block (ours) | 9.47 ms | within noise of naive | grows on demand, adaptive chunk size, ~30% fewer blocks than paged or vAttention-style |
 
 The paged reproduction is slower than the paper's own reported 20 to 26 percent, because we have no fused CUDA kernel, only a Python loop over blocks; that gap is called out explicitly in the proposal, not hidden. The direction holds: paging costs real speed, and it is recoverable by decoupling virtual addressing from physical allocation, which is exactly vAttention's claim.
 
-`AdaptiveBlockCache` is our own idea: small blocks early in a sequence, bigger blocks once it grows past a threshold, same pattern real allocators use for differently sized objects. It does cut the physical block count by about 30 percent, a real memory win, but it does not recover any speed, if anything it is slightly slower than plain fixed size paging even after we ruled out measurement bias (rotated run order) and a real implementation bug (redundant per batch recomputation). That is an honest negative result, not a hidden one, and it actually reinforces the core thesis: cutting block count alone is not enough, vAttention's real fix works because it stops re-gathering entirely, not because it uses fewer blocks. See `VIVA_PREP.md` for the full writeup.
+`AdaptiveBlockCache` is our own idea: a single growing buffer per layer, like `VAttentionCache`, except nothing is preallocated to `max_seq_len` up front. It grows lazily in chunks, the same way a dynamic array doubles when it runs out of room: small chunks early in a sequence, bigger chunks once it survives past a threshold, the same pattern real allocators use for differently sized objects. We tried a version that kept PagedCache's per-sequence block list but shrank the block count; it was still slower than naive, so we dug into why instead of accepting the number. The real cause, isolated with a controlled microbenchmark, had nothing to do with block count: PagedCache stores every sequence in a separate Python list, so producing the single tensor the attention math needs forces a real memory copy on every decode step, no matter how few or how large the blocks are. `VAttentionCache` and `NaiveContiguousCache` avoid this because they store the whole batch in one tensor from the start, so a read is a free slice, not a copy. Once `AdaptiveBlockCache` was rebuilt on that same single-tensor structure, it landed in the same speed class as naive and vAttention-style (well within normal CPU noise) while still using about 30 percent fewer blocks than either, because its chunks adapt to sequence length instead of committing a fixed size every time. See `VIVA_PREP.md` for the full writeup, including the earlier version that didn't work and why.
 
 ## Team
 
