@@ -10,14 +10,14 @@ vLLM's [PagedAttention](https://arxiv.org/abs/2309.06180) stores each request's 
 
 That win is not free. The vLLM paper's own numbers show its paged kernel is 20 to 26 percent slower than a non-paged kernel, because every read now has to walk a block table instead of doing one contiguous memory access. Microsoft's [vAttention](https://arxiv.org/abs/2405.04437) (ASPLOS'25) argues you can keep the memory saving property without paying that cost, by keeping the virtual address space contiguous and only committing physical memory in blocks underneath it, using CUDA's virtual memory APIs. It is live enough that there is an [open GitHub issue on vllm-project/vllm](https://github.com/vllm-project/vllm/issues/17612) about adopting it.
 
-We do not have GPU access, so we cannot reproduce the CUDA level mechanism. Instead we reproduce the behavioral trade-off in pure PyTorch: the same attention math, three different KV cache backends, isolating exactly where the slowdown comes from and whether decoupling virtual contiguity from physical allocation actually recovers it.
+We do not have GPU access, so we cannot reproduce the CUDA level mechanism. Instead we reproduce the behavioral trade-off in pure PyTorch: the same attention math, four different KV cache backends, isolating exactly where the slowdown comes from and whether decoupling virtual contiguity from physical allocation actually recovers it. The fourth backend is our own idea, not from either paper, see below.
 
 ## What is in this repo
 
 ```
-src/attention.py    shared decode-step attention math, identical across all three backends
-src/caches.py        NaiveContiguousCache, PagedCache (vLLM-style), VAttentionCache (ours)
-src/benchmark.py     runs all three backends, times decode, tracks physical block usage
+src/attention.py    shared decode-step attention math, identical across all four backends
+src/caches.py        NaiveContiguousCache, PagedCache (vLLM-style), VAttentionCache (ours), AdaptiveBlockCache (ours)
+src/benchmark.py     runs all four backends, times decode, tracks physical block usage
 src/plot.py           turns results/benchmark_results.json into results/benchmark.png
 results/benchmark_results.json   raw numbers from the last run
 results/benchmark.png             the figure used in the proposal
@@ -35,15 +35,18 @@ python plot.py          # writes ../results/benchmark.png
 
 ## What we found
 
-Last run: 16 sequences, 4 layers, 8 heads, 256 decode steps, CPU only.
+Last run: 16 sequences, 4 layers, 8 heads, 256 decode steps, CPU only, pooled across 4 trials with rotated run order so machine load drift cannot unfairly penalize whichever backend happens to run last.
 
 | backend | mean step time | vs naive | physical memory |
 |---|---|---|---|
-| naive contiguous | 6.10 ms | baseline | commits everything up front |
-| paged (vLLM-style) | 26.38 ms | **332% slower** | grows on demand |
-| vAttention-style (ours) | 6.54 ms | **7.2% slower** | grows on demand, identical to paged |
+| naive contiguous | 9.67 ms | baseline | commits everything up front |
+| paged (vLLM-style) | 36.83 ms | **+281% slower** | grows on demand |
+| vAttention-style (ours) | 9.41 ms | within noise of naive | grows on demand, identical to paged |
+| adaptive block (ours) | 42.26 ms | **+337% slower** | grows on demand, ~30% fewer blocks than paged |
 
 The paged reproduction is slower than the paper's own reported 20 to 26 percent, because we have no fused CUDA kernel, only a Python loop over blocks; that gap is called out explicitly in the proposal, not hidden. The direction holds: paging costs real speed, and it is recoverable by decoupling virtual addressing from physical allocation, which is exactly vAttention's claim.
+
+`AdaptiveBlockCache` is our own idea: small blocks early in a sequence, bigger blocks once it grows past a threshold, same pattern real allocators use for differently sized objects. It does cut the physical block count by about 30 percent, a real memory win, but it does not recover any speed, if anything it is slightly slower than plain fixed size paging even after we ruled out measurement bias (rotated run order) and a real implementation bug (redundant per batch recomputation). That is an honest negative result, not a hidden one, and it actually reinforces the core thesis: cutting block count alone is not enough, vAttention's real fix works because it stops re-gathering entirely, not because it uses fewer blocks. See `VIVA_PREP.md` for the full writeup.
 
 ## Team
 

@@ -118,6 +118,56 @@ per step, which is exactly where block table lookups happen over and over
 and the non-contiguous layout actually costs you something. That is why
 both the vLLM ablation and our benchmark focus there.
 
+**Q: What is AdaptiveBlockCache, and why did you add it?**
+
+Mid-project feedback was that the first three backends just reproduce two
+papers' own ideas, nothing in the approach was ours. Fair. So we built a
+fourth backend that's actually our idea: `AdaptiveBlockCache`. Same
+grow-a-list-of-blocks pattern as `PagedCache`, but blocks aren't all the
+same size. Early blocks are small (16 to 8, half of vLLM's default),
+because most real requests are short and small blocks keep the wasted
+tail-end space tight for the common case. Once a sequence passes 4 times
+the block size in tokens, later blocks switch to large (4x the default),
+on the idea that fewer, bigger fragments means less to gather for the
+sequences that do keep going. It's the same idea as size classes in a
+real memory allocator (glibc's malloc) or young/old generations in a
+garbage collector, just applied to KV-cache blocks. Neither the vLLM
+paper nor the vAttention paper does this.
+
+**Q: Did it work?**
+
+Half of it did, half of it didn't, and the honest answer to "did it
+work" is the actual finding, not a clean yes. It does reduce the
+physical block count: about 11 blocks per sequence by the end of a
+256-token run versus 16 for plain fixed-size paging, roughly 30 percent
+fewer blocks, which is real, it's exactly what the design was supposed to
+buy. But it did not translate into faster decoding. In our measurements,
+mean step time was *higher* than plain paged, not lower, consistently,
+even after we fixed a real bug where the implementation was redundantly
+recomputing something inside a per-batch loop that only depends on
+timestep, and even after rotating which backend runs first across trials
+so machine load drift couldn't be quietly penalizing whichever one
+happened to run last. We went further and isolated the gather step
+itself with a controlled test, 2000 repetitions, properly warmed up, and
+found that `torch.cat`'s cost did not meaningfully depend on how many
+pieces or what sizes they were, which ruled out our own "fewer pieces
+should be faster" assumption directly, instead of just accepting a
+number that didn't match it.
+
+**Q: So why report a backend that made things worse?**
+
+Because it's a real, informative result, not a failure to hide. It tells
+us something the clean reproductions alone don't: just reducing block
+*count* is not enough to recover decode speed in a design that still
+re-gathers everything from scratch every single step. That's exactly
+why vAttention's actual fix isn't "use bigger blocks", it's "stop
+re-gathering at all", true O(1) append through virtual contiguity. Our
+own attempt at a cheaper mitigation makes vAttention's actual design
+choice look more deliberate in hindsight, not less. That's the novelty
+answer: not a bigger number, a genuine idea of our own, tested honestly,
+with a result that sharpens the argument for why the real paper's fix
+works the way it does.
+
 **Q: Where is the honesty in this project, what would you not claim?**
 
 - Not claiming to beat vLLM or vAttention's real numbers. This is a small
@@ -130,11 +180,14 @@ both the vLLM ablation and our benchmark focus there.
   is a behavioral emulation of the same idea, clearly labeled as such.
 - Not claiming any result about model output quality. Every experiment
   runs on random tensors, no real language model.
+- Not claiming AdaptiveBlockCache is an improvement. It traded speed for
+  a real memory win and we say so directly, instead of only reporting
+  the half of the result that looks good.
 
 **Q: What is next if this gets approved for full implementation?**
 
 Get GPU access, Kaggle's free 30 hours per week or Colab, wire the same
-three backends, or vAttention's real CUDA VMM implementation, into a
+four backends, or vAttention's real CUDA VMM implementation, into a
 small real model like GPT-2 or TinyLlama, and re-run the same benchmark
 methodology end to end with real prompts, ShareGPT style, the same source
 vLLM's own paper used, to see if the same relative pattern, paging costs

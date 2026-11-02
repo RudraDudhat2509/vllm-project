@@ -10,9 +10,9 @@ with open("../results/benchmark_results.json") as f:
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
 
-names = ["naive_contiguous", "paged", "vattention_style"]
-labels = ["Naive\ncontiguous", "Paged\n(vLLM-style)", "vAttention-style\n(ours)"]
-colors = ["#888888", "#d62728", "#2ca02c"]
+names = ["naive_contiguous", "paged", "vattention_style", "adaptive_block"]
+labels = ["Naive\ncontiguous", "Paged\n(vLLM-style)", "vAttention-style\n(ours)", "Adaptive block\n(ours)"]
+colors = ["#888888", "#d62728", "#2ca02c", "#9467bd"]
 step_times = [results[n]["mean_step_time_ms"] for n in names]
 
 ax1.bar(labels, step_times, color=colors)
